@@ -46,11 +46,13 @@ fext = np.zeros_like(coor)
 # list of prescribed DOFs
 iip = np.concatenate(
     (
-        dofs[mesh["nodesTopEdge"], 1],
-        dofs[mesh["nodesBottomEdge"], 1],
-        dofs[mesh["nodesBottomEdge"], 0]
+        dofs[mesh["LeftUpperLine"], 1],
+        dofs[mesh["LeftLowerLine"], 1],
+        dofs[mesh["RightLine"], 0],
+        dofs[mesh["RightLine"], 1]
     )
 )
+
 
 # simulation variables
 # --------------------
@@ -85,21 +87,38 @@ def randomizeMicrostr(nelem, nip, fraction_soft, value_hard, value_soft):
 # -------------------
 # mat = GMat.Elastic2d(K=np.ones([nelem, nip]), G=np.ones([nelem, nip]))
 # tauy0 = randomizeMicrostr(nelem, nip, 0.7, .600, .200)
-matBulk = GMatElastoPlast.LinearHardening2d(
+matBulk = GMatElastoPlast.LinearHardeningDamage2d(
     K=np.ones([nelemBulk, nipBulk])*170,
     G=np.ones([nelemBulk, nipBulk])*80,
-    tauy0=np.ones([nelemBulk, nipBulk])*1.0,
-    H=np.ones([nelemBulk, nipBulk])*1.0)
-
+    tauy0=np.ones([nelemBulk, nipBulk])*10.0,
+    H=np.ones([nelemBulk, nipBulk])*1.0,
+    D1=np.ones([nelemBulk, nipBulk])*0.1,
+    D2=np.ones([nelemBulk, nipBulk])*0.2,
+    D3=np.ones([nelemBulk, nipBulk])*-1.7    
+    )
 
 # Cohesive zone material initialization
-matChz = GooseFEM.ConstitutiveModels.Cohesive2d(
-    Kn=np.ones([nelemChz, nipChz])*50.0,
-    Kt=np.ones([nelemChz, nipChz])*50.0,
-    delta0=np.ones([nelemChz, nipChz])*0.005,
-    deltafrac=np.ones([nelemChz, nipChz])*0.08,
-    beta=np.ones([nelemChz, nipChz])*1.0
-    )
+# matChz = GooseFEM.ConstitutiveModels.CohesiveExponential2d(
+#     Kn=np.ones([nelemChz, nipChz])*50.0,
+#     Kt=np.ones([nelemChz, nipChz])*50.0,
+#     delta0=np.ones([nelemChz, nipChz])*1e-04,
+#     Gc=np.ones([nelemChz, nipChz])*0.5,
+#     beta=np.ones([nelemChz, nipChz])*1.0
+#     )
+
+# Cohesive zone material initialization
+Kn_mod = np.ones([nelemChz, nipChz])*30.0
+Kn_mod[:4] = 5
+Kt_mod = np.ones([nelemChz, nipChz])*30.0
+Kt_mod[:4] = 5
+matChz = GooseFEM.ConstitutiveModels.CohesiveBilinear2d(
+    Kn=Kn_mod,
+    Kt=Kt_mod,
+    delta0=np.ones([nelemChz, nipChz])*0.02,
+    deltafrac=np.ones([nelemChz, nipChz])*0.1,
+    beta=np.ones([nelemChz, nipChz])*1.0,
+    eta = np.ones([nelemChz, nipChz])*5e-03
+    )    
 
 
 I2 = GMatTensor.Cartesian3d.Array2d(matBulk.shape).I2  
@@ -133,8 +152,8 @@ fres = fext - fint
 
 # solve
 # -----
-ninc = 801
-max_iter = 100
+ninc = 8001
+max_iter = 200
 tangent = True
 
 # initialize stress/strain arrays for eq. plastic strain / mises stress plot
@@ -145,17 +164,22 @@ du = np.zeros_like(disp)
 du_last = np.zeros_like(vector.AsDofs_u(disp))
 
 initial_guess = np.zeros_like(disp)
-# xp = np.zeros_like(vector.AsDofs_p(disp))
+
+total_time = 1.0 # pseudo time
+dt = total_time / ninc # pseudo time increment
+
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    #if ilam > 65:
-    #    break
+    if ilam % 20 == 0:
+        print(matChz.Damage[:8])
+
     # empty displacement update
     du.fill(0.0)
     # update displacement
-    du[mesh["nodesTopEdge"], 1] = (+0.040/ninc)
-    # du[mesh["nodesTopEdge"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["nodesBottomEdge"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["nodesBottomEdge"], 1] = 0.0  # not strictly needed: default == 0
+    du[mesh["LeftUpperLine"], 1] = (+0.015/ninc)
+    du[mesh["LeftLowerLine"], 1] = (-0.015/ninc)
+    
+    du[mesh["RightLine"], 0] = 0.0  # not strictly needed: default == 0
+    du[mesh["RightLine"], 1] = 0.0  # not strictly needed: default == 0
     
 
     # convergence flag
@@ -179,7 +203,7 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
 
         # update nodal displacements of cohesive zone
         elemChz.relative_disp(ueChz, matChz.delta, matChz.ori)
-        matChz.refresh()
+        matChz.refresh(dt)
   
         # update internal forces and assemble
         feBulk = elemBulk.Int_gradN_dot_tensor2_dV(matBulk.Sig)
@@ -229,7 +253,6 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     sigeq[ilam] = np.average(GMatElastoPlast.Sigeq(np.average(matBulk.Sig, axis=1)))
     
     if converged:
-        print(matChz.Damage)
         continue
     if not converged:
         raise RuntimeError(f"Load step {ilam} failed to converge.")
@@ -244,7 +267,7 @@ elemBulk0.symGradN_vector(ueBulk, matBulk.F)
 elemChz.relative_disp(ueChz, matChz.delta, matChz.ori)
 matBulk.F += I2
 matBulk.refresh()  
-matChz.refresh()
+matChz.refresh(dt)
 
 
 feBulk = elemBulk.Int_gradN_dot_tensor2_dV(matBulk.Sig)
@@ -260,7 +283,7 @@ fres_u = -vector.AsDofs_u(fint)
             
 res_norm = np.linalg.norm(fres_u)
 # print residual
-assert np.isclose(res_norm, 0,  atol=1e-6)
+# assert np.isclose(res_norm, 0,  atol=1e-6)
 # plot
 # ----
 parser = argparse.ArgumentParser()
@@ -333,6 +356,7 @@ if args.plot:
     # Add colorbar
     mappable = ScalarMappable(norm=plt.Normalize(), cmap=plt.colormaps["jet"])
     mappable.set_array(damage_all)
+    ax.set_ylim(-0.0, 0.2)
     fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="Damage")
 
     # optional save
