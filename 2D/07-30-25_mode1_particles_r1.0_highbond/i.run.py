@@ -24,9 +24,7 @@ mesh_file_path = os.path.join(curr_dir, mesh_file_name)
 if os.path.exists(mesh_file_path):
     print(f"Parsing mesh: {mesh_file_path}")
     mesh = parse_msh( 
-        msh_filepath=mesh_file_path,
-        bottom_line_name="CohesiveLineBottom",
-        top_line_name="CohesiveLineTop"
+        msh_filepath=mesh_file_path
     )
 else:
     print(f"Error: Mesh file not found at {mesh_file_path}")
@@ -34,10 +32,13 @@ else:
 # mesh definition, displacement, external forces
 coor = mesh["coor"]
 connBulk = mesh["conn_bulk"]
-connChz = mesh["conn_cohesive"]
+connCohPart = mesh["conn_CohesiveParticle"]
+connCohInt = mesh["conn_CohesiveInterface"]
+# connChz = np.vstack((connCohParticle, connCohInterface))
 dofs = mesh["dofs"]
 nelemBulk = len(connBulk)
-nelemChz = len(connChz)
+nelemCohPart = len(connCohPart)
+nelemCohInt = len(connCohInt)
 ndim = 2
 
 disp = np.zeros_like(coor)
@@ -46,9 +47,11 @@ fext = np.zeros_like(coor)
 # list of prescribed DOFs
 iip = np.concatenate(
     (
-        dofs[mesh["TopLine"][:-5], 1],
-        dofs[mesh["BottomLine"], 1],
-        dofs[mesh["BottomLine"], 0]
+        dofs[mesh["LeftUpperLine"], 1],
+        dofs[mesh["LeftLowerLine"], 1],
+        dofs[mesh["RightLine"][0:1], 0],
+        dofs[mesh["RightLine"][0:1], 1],
+        dofs[mesh["RightLine"][1:], 1]
     )
 )
 
@@ -66,13 +69,12 @@ Solver = GooseFEM.MatrixPartitionedSolver()
 # element definition
 elemBulk = GooseFEM.Element.Quad4.QuadraturePlanar(vector.AsElement(coor, connBulk))
 elemBulk0 = GooseFEM.Element.Quad4.QuadraturePlanar(vector.AsElement(coor, connBulk))
-
-# TO DO
-elemChz = GooseFEM.Element.Cohesive4.Quadrature(vector.AsElement(coor, connChz))
-elemChz0 = GooseFEM.Element.Cohesive4.Quadrature(vector.AsElement(coor, connChz))
+elemCohPart = GooseFEM.Element.Cohesive4.Quadrature(vector.AsElement(coor, connCohPart))
+elemCohInt = GooseFEM.Element.Cohesive4.Quadrature(vector.AsElement(coor, connCohInt))
 
 nipBulk = elemBulk.nip
-nipChz = elemChz.nip
+nipCohPart = elemCohPart.nip
+nipCohInt = elemCohInt.nip
 
 # material definition
 # -------------------
@@ -96,54 +98,57 @@ matBulk = GMatElastoPlast.LinearHardeningDamage2d(
     D3=np.ones([nelemBulk, nipBulk])*-1.7    
     )
 
-# Cohesive zone material initialization
-# matChz = GooseFEM.ConstitutiveModels.CohesiveExponential2d(
-#     Kn=np.ones([nelemChz, nipChz])*50.0,
-#     Kt=np.ones([nelemChz, nipChz])*50.0,
-#     delta0=np.ones([nelemChz, nipChz])*1e-04,
-#     Gc=np.ones([nelemChz, nipChz])*0.5,
-#     beta=np.ones([nelemChz, nipChz])*1.0
-#     )
-
-# Cohesive zone material initialization
-Kn_mod = np.ones([nelemChz, nipChz])*30.0
-Kn_mod[:4] = 5
-Kt_mod = np.ones([nelemChz, nipChz])*30.0
-Kt_mod[:4] = 5
-matChz = GooseFEM.ConstitutiveModels.CohesiveBilinear2d(
-    Kn=Kn_mod,
-    Kt=Kt_mod,
-    delta0=np.ones([nelemChz, nipChz])*0.02,
-    deltafrac=np.ones([nelemChz, nipChz])*0.1,
-    beta=np.ones([nelemChz, nipChz])*1.0,
-    eta = np.ones([nelemChz, nipChz])*5e-03
+# Cohesive zone material initialization for bulk Interface
+matCohInt = GooseFEM.ConstitutiveModels.CohesiveBilinear2d(
+    Kn=np.ones([nelemCohInt, nipCohInt])*30.0,
+    Kt=np.ones([nelemCohInt, nipCohInt])*30.0,
+    delta0=np.ones([nelemCohInt, nipCohInt])*0.02,
+    deltafrac=np.ones([nelemCohInt, nipCohInt])*0.2,
+    beta=np.ones([nelemCohInt, nipCohInt])*1.0,
+    eta = np.ones([nelemCohInt, nipCohInt])*5e-03
     )    
+
+# Cohesive zone material initialization for Particle Interface
+matCohPart = GooseFEM.ConstitutiveModels.CohesiveBilinear2d(
+    Kn=np.ones([nelemCohPart, nipCohPart])*150.0,
+    Kt=np.ones([nelemCohPart, nipCohPart])*150.0,
+    delta0=np.ones([nelemCohPart, nipCohPart])*0.02,
+    deltafrac=np.ones([nelemCohPart, nipCohPart])*0.2,
+    beta=np.ones([nelemCohPart, nipCohPart])*1.0,
+    eta = np.ones([nelemCohPart, nipCohPart])*5e-03
+    )      
 
 
 I2 = GMatTensor.Cartesian3d.Array2d(matBulk.shape).I2  
 # simulation variables
 # --------------------
 ueBulk = vector.AsElement(disp, connBulk)
-ueChz = vector.AsElement(disp, connChz)
+ueCohPart = vector.AsElement(disp, connCohPart)
+ueCohInt = vector.AsElement(disp, connCohInt)
 cooreBulk = vector.AsElement(coor, connBulk)
-cooreChz = vector.AsElement(coor, connChz)
+cooreCohPart = vector.AsElement(coor, connCohPart)
+cooreCohInt = vector.AsElement(coor, connCohInt)
 elemBulk0.gradN_vector((cooreBulk + ueBulk), matBulk.F)
 matBulk.F[:, :, 2, 2] = 1.0  # Add out-of-plane stretch = 1.0 (identity)
 matBulk.refresh()
 
 # internal force of the right hand side per element and assembly
 feBulk = elemBulk.Int_gradN_dot_tensor2_dV(matBulk.Sig)
-feChz = elemChz.Int_N_dot_traction_dL(matChz.T)
+feCohPart = elemCohPart.Int_N_dot_traction_dL(matCohPart.T)
+feCohInt = elemCohInt.Int_N_dot_traction_dL(matCohInt.T)
 fint = vector.AssembleNode(feBulk, connBulk)
-fint += vector.AssembleNode(feChz, connChz)
+fint += vector.AssembleNode(feCohPart, connCohPart)
+fint += vector.AssembleNode(feCohInt, connCohInt)
 
 # initial element tangential stiffness matrix incorporating the geometrical and material stiffness matrix
 KeBulk = elemBulk.Int_gradN_dot_tensor4_dot_gradNT_dV(matBulk.C)
-KeChz = elemChz.Int_BT_D_B_dL(matChz.C)
+KeCohPart = elemCohPart.Int_BT_D_B_dL(matCohPart.C)
+KeCohInt = elemCohInt.Int_BT_D_B_dL(matCohInt.C)
 
 K.clear()
 K.assemble(KeBulk, connBulk)
-K.assemble(KeChz, connChz)
+K.assemble(KeCohPart, connCohPart)
+K.assemble(KeCohInt, connCohInt)
 K.finalize()
 
 # initial residual
@@ -152,7 +157,7 @@ fres = fext - fint
 # solve
 # -----
 ninc = 3001
-max_iter = 500
+max_iter = 200
 tangent = True
 
 # initialize stress/strain arrays for eq. plastic strain / mises stress plot
@@ -160,68 +165,81 @@ epseq = np.zeros(ninc)
 sigeq = np.zeros(ninc)
 
 du = np.zeros_like(disp)
-du_last = np.zeros_like(vector.AsDofs_u(disp))
-
-initial_guess = np.zeros_like(disp)
 
 total_time = 1.0 # pseudo time
+
 dt = total_time / ninc # pseudo time increment
 
 residual_history = []
 
+initial_guess = np.zeros_like(disp)
+
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if ilam % 20 == 0:
-        print(matChz.Damage[:8])
+    if ilam % 50 == 0:
+        print(matCohInt.Damage[:8])
+        print(matCohPart.Damage[:8])
 
     # empty displacement update
-    du.fill(0.0)
+    # du.fill(0.0)
     # update displacement
-    # du[mesh["nodesTopEdge"][:-5], 0] = (+0.05/ninc)
-    du[mesh["TopLine"][:-5], 1] = (+0.1/ninc)
-    # du[mesh["nodesTopEdge"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["BottomLine"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["BottomLine"], 1] = 0.0  # not strictly needed: default == 0
+    disp[mesh["LeftUpperLine"], 1] += (+0.5/ninc)
+    disp[mesh["LeftLowerLine"], 1] += (-0.5/ninc)
+    
+    disp[mesh["RightLine"][0:1], 0] = 0.0  # not strictly needed: default == 0
+    disp[mesh["RightLine"][0:1], 1] = 0.0  # not strictly needed: default == 0
+    disp[mesh["RightLine"][1:], 1] = 0.0  # not strictly needed: default == 0
     
 
     # convergence flag
     converged = False
     
     matBulk.increment()
-    matChz.increment()
+    matCohPart.increment()
+    matCohInt.increment()
 
-    elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
-    elemChz.update_x(vector.AsElement(coor + disp, connChz))
+    # elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
+    # elemChz.update_x(vector.AsElement(coor + disp, connChz))
 
+    disp = vector.NodeFromPartitioned(vector.AsDofs_u(disp) + vector.AsDofs_u(initial_guess), vector.AsDofs_p(disp))
+
+    total_increment = initial_guess.copy()  
     for iter in range(max_iter): 
         # update element wise displacments
         ueBulk = vector.AsElement(disp, connBulk) 
-        ueChz = vector.AsElement(disp, connChz)
+        ueCohPart = vector.AsElement(disp, connCohPart)
+        ueCohInt = vector.AsElement(disp, connCohInt)
 
         # update deformation gradient F
-        elemBulk0.symGradN_vector(ueBulk, matBulk.F)
+        elemBulk.symGradN_vector(ueBulk, matBulk.F)
         matBulk.F += I2
         matBulk.refresh()
 
         # update nodal displacements of cohesive zone
-        elemChz.relative_disp(ueChz, matChz.delta, matChz.ori)
-        matChz.refresh(dt)
+        elemCohPart.relative_disp(ueCohPart, matCohPart.delta, matCohPart.ori)
+        elemCohInt.relative_disp(ueCohInt, matCohInt.delta, matCohInt.ori)        
+        matCohPart.refresh(dt)
+        matCohInt.refresh(dt)
   
         # update internal forces and assemble
         feBulk = elemBulk.Int_gradN_dot_tensor2_dV(matBulk.Sig)
 
         # update tractions of cohesive zone
-        feChz = elemChz.Int_N_dot_traction_dL(matChz.T)
+        feCohPart = elemCohPart.Int_N_dot_traction_dL(matCohPart.T)
+        feCohInt = elemCohInt.Int_N_dot_traction_dL(matCohInt.T)
 
         fint = vector.AssembleNode(feBulk, connBulk)
-        fint += vector.AssembleNode(feChz, connChz)
+        fint += vector.AssembleNode(feCohPart, connCohPart)
+        fint += vector.AssembleNode(feCohInt, connCohInt)
 
         # update stiffness matrix
-        KeBulk = elemBulk.Int_gradN_dot_tensor4_dot_gradNT_dV(matBulk.C)
-        KeChz = elemChz.Int_BT_D_B_dL(matChz.C)
+        KeBulk = elemBulk.Int_gradN_dot_tensor4_dot_gradNT_dV(matBulk.C)        
+        KeCohPart = elemCohPart.Int_BT_D_B_dL(matCohPart.C)
+        KeCohInt = elemCohInt.Int_BT_D_B_dL(matCohInt.C)
 
         K.clear()
         K.assemble(KeBulk, connBulk)
-        K.assemble(KeChz, connChz)
+        K.assemble(KeCohPart, connCohPart)
+        K.assemble(KeCohInt, connCohInt)
         K.finalize()
 
         fres = -fint
@@ -230,59 +248,66 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
             # residual 
             fres_u = -vector.AsDofs_u(fint)
             
-            res_norm = np.linalg.norm(fres_u)
+            res_norm = np.linalg.norm(fres_u) 
 
-            residual_history.append(res_norm)  
-            # print (f"Iter {iter}, Residual = {res_norm}")
+            residual_history.append(res_norm)
+
             if res_norm < 1e-06:
                 print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res_norm}")
                 converged = True
                 break
 
-            # solve
-            du.fill(0.0)
-
+        # solve
         Solver.solve(K, fres, du)
+
+        # add newly found delta_u to total increment
+        total_increment += du
 
         # update displacement vector
         disp += du
 
         # update shape functions
-        elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
-        elemChz.update_x(vector.AsElement(coor + disp, connChz))
+        # elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
+        # elemChz.update_x(vector.AsElement(coor + disp, connChz))
 
     # accumulate strains and stresses
     epseq[ilam] = np.average(GMatElastoPlast.Epseq(np.average(GMatElastoPlast.Strain(matBulk.F), axis=1)))
     sigeq[ilam] = np.average(GMatElastoPlast.Sigeq(np.average(matBulk.Sig, axis=1)))
     
     if converged:
-        for r, val in enumerate(residual_history):
-            print(f"Residual at iter {r}: {val}")
+        #for r, val in enumerate(residual_history):
+        #    print(f"Residual at iter {r}: {val}")
         residual_history.clear()
+        initial_guess = 1.0 * total_increment
         continue
     if not converged:
-        raise RuntimeError(f"Load step {ilam} failed to converge.")
+        print(f"Load step {ilam} failed to converge. \n Continuing with post-processing... ")
+        break
+        #raise RuntimeError(f"Load step {ilam} failed to converge.")
 
 
 # post-process
 # ------------
 # strain
-print(matChz.Damage)
+print(matCohInt.Damage)
+print(matCohPart.Damage)
 
 elemBulk0.symGradN_vector(ueBulk, matBulk.F)
-elemChz.relative_disp(ueChz, matChz.delta, matChz.ori)
+elemCohPart.relative_disp(ueCohPart, matCohPart.delta, matCohPart.ori)
+elemCohInt.relative_disp(ueCohInt, matCohInt.delta, matCohInt.ori)
 matBulk.F += I2
 matBulk.refresh()  
-matChz.refresh(dt)
+matCohPart.refresh(dt)
+matCohInt.refresh(dt)
 
 
 feBulk = elemBulk.Int_gradN_dot_tensor2_dV(matBulk.Sig)
-feChz = elemChz.Int_N_dot_traction_dL(matChz.T)
+feCohPart = elemCohPart.Int_N_dot_traction_dL(matCohPart.T)
+feCohInt = elemCohInt.Int_N_dot_traction_dL(matCohInt.T)
 # internal force
-elemBulk.int_gradN_dot_tensor2_dV(matBulk.Sig, feBulk)
-elemChz.int_N_dot_traction_dL(matChz.T, feChz)
 fint = vector.AssembleNode(feBulk, connBulk)
-fint += vector.AssembleNode(feChz, connChz)
+fint += vector.AssembleNode(feCohPart, connCohPart)
+fint += vector.AssembleNode(feCohInt, connCohInt)
 
 # apply reaction force
 fres_u = -vector.AsDofs_u(fint)
@@ -310,13 +335,14 @@ if args.plot:
     Sigav = np.average(matBulk.Sig, weights=dV, axis=1)
     sigeq_av = GMatElastoPlast.Sigeq(Sigav)
     damageBulk_av = np.zeros_like(sigeq_av)
-    damageChz_av = np.average(matChz.Damage, axis = 1)
+    damageCohPart_av = np.average(matCohPart.Damage, axis = 1)
+    damageCohInt_av = np.average(matCohInt.Damage, axis = 1)
     # Average eq. strain per element
     epseq_av = GMatElastoPlast.Epseq(np.average(GMatElastoPlast.Strain(matBulk.F), axis=1))
 
     #combine connectivity
-    conn_all = np.concatenate((connBulk, connChz), axis=0)
-    damage_all = np.concatenate((damageBulk_av, damageChz_av), axis=0)
+    conn_all = np.concatenate((connBulk, connCohPart, connCohInt), axis=0)
+    damage_all = np.concatenate((damageBulk_av, damageCohPart_av, damageCohInt_av), axis=0)
 
     # plot stress
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -362,7 +388,8 @@ if args.plot:
     # Add colorbar
     mappable = ScalarMappable(norm=plt.Normalize(), cmap=plt.colormaps["jet"])
     mappable.set_array(damage_all)
-    ax.set_ylim(-0.0, 0.2)
+    ax.set_xlim(0.7, 15.5)
+    ax.set_ylim(-2.3, 2.3)
     fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="Damage")
 
     # optional save

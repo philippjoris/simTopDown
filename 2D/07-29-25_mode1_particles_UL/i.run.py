@@ -9,7 +9,7 @@ import numpy as np
 import random
 
 # include functions from srcTopDown package
-from srcTopDown.helper_functions.gmsh.parser import parse_msh
+from srcTopDown.helper_functions.gmsh.parser_update import parse_msh
 
 #
 # Example with 2D geometry with hole and horizontal cohesive zone
@@ -24,9 +24,7 @@ mesh_file_path = os.path.join(curr_dir, mesh_file_name)
 if os.path.exists(mesh_file_path):
     print(f"Parsing mesh: {mesh_file_path}")
     mesh = parse_msh( 
-        msh_filepath=mesh_file_path,
-        bottom_line_name="CohesiveLineBottom",
-        top_line_name="CohesiveLineTop"
+        msh_filepath=mesh_file_path
     )
 else:
     print(f"Error: Mesh file not found at {mesh_file_path}")
@@ -34,7 +32,9 @@ else:
 # mesh definition, displacement, external forces
 coor = mesh["coor"]
 connBulk = mesh["conn_bulk"]
-connChz = mesh["conn_cohesive"]
+connCohParticle = mesh["conn_CohesiveParticle"]
+connCohInterface = mesh["conn_CohesiveInterface"]
+connChz = np.vstack((connCohParticle, connCohInterface))
 dofs = mesh["dofs"]
 nelemBulk = len(connBulk)
 nelemChz = len(connChz)
@@ -46,9 +46,11 @@ fext = np.zeros_like(coor)
 # list of prescribed DOFs
 iip = np.concatenate(
     (
-        dofs[mesh["TopLine"][:-5], 1],
-        dofs[mesh["BottomLine"], 1],
-        dofs[mesh["BottomLine"], 0]
+        dofs[mesh["LeftUpperLine"], 1],
+        dofs[mesh["LeftLowerLine"], 1],
+        dofs[mesh["RightLine"][0:1], 0],
+        dofs[mesh["RightLine"][0:1], 1],
+        dofs[mesh["RightLine"][1:], 1]
     )
 )
 
@@ -106,15 +108,11 @@ matBulk = GMatElastoPlast.LinearHardeningDamage2d(
 #     )
 
 # Cohesive zone material initialization
-Kn_mod = np.ones([nelemChz, nipChz])*30.0
-Kn_mod[:4] = 5
-Kt_mod = np.ones([nelemChz, nipChz])*30.0
-Kt_mod[:4] = 5
 matChz = GooseFEM.ConstitutiveModels.CohesiveBilinear2d(
-    Kn=Kn_mod,
-    Kt=Kt_mod,
+    Kn=np.ones([nelemChz, nipChz])*30.0,
+    Kt=np.ones([nelemChz, nipChz])*30.0,
     delta0=np.ones([nelemChz, nipChz])*0.02,
-    deltafrac=np.ones([nelemChz, nipChz])*0.1,
+    deltafrac=np.ones([nelemChz, nipChz])*0.2,
     beta=np.ones([nelemChz, nipChz])*1.0,
     eta = np.ones([nelemChz, nipChz])*5e-03
     )    
@@ -152,7 +150,7 @@ fres = fext - fint
 # solve
 # -----
 ninc = 3001
-max_iter = 500
+max_iter = 200
 tangent = True
 
 # initialize stress/strain arrays for eq. plastic strain / mises stress plot
@@ -162,25 +160,27 @@ sigeq = np.zeros(ninc)
 du = np.zeros_like(disp)
 du_last = np.zeros_like(vector.AsDofs_u(disp))
 
-initial_guess = np.zeros_like(disp)
-
 total_time = 1.0 # pseudo time
+
 dt = total_time / ninc # pseudo time increment
 
 residual_history = []
 
+initial_guess = np.zeros_like(disp)
+
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if ilam % 20 == 0:
+    if ilam % 50 == 0:
         print(matChz.Damage[:8])
 
     # empty displacement update
     du.fill(0.0)
     # update displacement
-    # du[mesh["nodesTopEdge"][:-5], 0] = (+0.05/ninc)
-    du[mesh["TopLine"][:-5], 1] = (+0.1/ninc)
-    # du[mesh["nodesTopEdge"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["BottomLine"], 0] = 0.0  # not strictly needed: default == 0
-    du[mesh["BottomLine"], 1] = 0.0  # not strictly needed: default == 0
+    du[mesh["LeftUpperLine"], 1] = (+0.5/ninc)
+    du[mesh["LeftLowerLine"], 1] = (-0.5/ninc)
+    
+    du[mesh["RightLine"][0:1], 0] = 0.0  # not strictly needed: default == 0
+    du[mesh["RightLine"][0:1], 1] = 0.0  # not strictly needed: default == 0
+    du[mesh["RightLine"][1:], 1] = 0.0  # not strictly needed: default == 0
     
 
     # convergence flag
@@ -192,6 +192,10 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
     elemChz.update_x(vector.AsElement(coor + disp, connChz))
 
+    du = vector.NodeFromPartitioned(vector.AsDofs_u(du) + vector.AsDofs_u(initial_guess), vector.AsDofs_p(du))
+    disp += du  
+
+    total_increment = initial_guess.copy()  
     for iter in range(max_iter): 
         # update element wise displacments
         ueBulk = vector.AsElement(disp, connBulk) 
@@ -230,19 +234,22 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
             # residual 
             fres_u = -vector.AsDofs_u(fint)
             
-            res_norm = np.linalg.norm(fres_u)
+            res_norm = np.linalg.norm(fres_u) 
 
-            residual_history.append(res_norm)  
-            # print (f"Iter {iter}, Residual = {res_norm}")
+            residual_history.append(res_norm)
+
             if res_norm < 1e-06:
                 print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res_norm}")
                 converged = True
                 break
 
-            # solve
-            du.fill(0.0)
+        # solve
+        du.fill(0.0)
 
         Solver.solve(K, fres, du)
+
+        # add newly found delta_u to total increment
+        total_increment += du
 
         # update displacement vector
         disp += du
@@ -259,6 +266,7 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
         for r, val in enumerate(residual_history):
             print(f"Residual at iter {r}: {val}")
         residual_history.clear()
+        initial_guess = 0.9 * total_increment
         continue
     if not converged:
         raise RuntimeError(f"Load step {ilam} failed to converge.")
@@ -364,7 +372,8 @@ if args.plot:
     mappable.set_array(damage_all)
     ax.set_ylim(-0.0, 0.2)
     fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="Damage")
-
+    ax.set_xlim(-0.1, 8.)
+    ax.set_ylim(-0.5, 0.5)
     # optional save
     if args.save:
         fig.savefig('fixed-disp_damage.pdf')
