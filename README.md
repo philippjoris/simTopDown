@@ -1,2 +1,2 @@
-set path to src folder to use (helper) functions:
-export PYTHONPATH="/home/20250672/srcTopDown/:$PYTHONPATH"
+set path to src folder to use (helper) functions under windows shell:
+$env:PYTHONPATH = "C:\Users\20250672\vscode\Mesoscale\MesoscaleProject\" + $env:PYTHONPATH

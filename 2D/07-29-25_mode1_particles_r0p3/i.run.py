@@ -9,7 +9,7 @@ import numpy as np
 import random
 
 # include functions from srcTopDown package
-from srcTopDown.helper_functions.gmsh.parser import parse_msh
+from srcTopDown.helper_functions.gmsh.parser_2D import parse_msh
 
 #
 # Example with 2D geometry with hole and horizontal cohesive zone
@@ -156,7 +156,7 @@ fres = fext - fint
 
 # solve
 # -----
-ninc = 3001
+ninc = 2001
 max_iter = 200
 tangent = True
 
@@ -182,8 +182,8 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     # empty displacement update
     # du.fill(0.0)
     # update displacement
-    disp[mesh["LeftUpperLine"], 1] += (+0.5/ninc)
-    disp[mesh["LeftLowerLine"], 1] += (-0.5/ninc)
+    disp[mesh["LeftUpperLine"], 1] += (+0.4/ninc)
+    disp[mesh["LeftLowerLine"], 1] += (-0.4/ninc)
     
     disp[mesh["RightLine"][0:1], 0] = 0.0  # not strictly needed: default == 0
     disp[mesh["RightLine"][0:1], 1] = 0.0  # not strictly needed: default == 0

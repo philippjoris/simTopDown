@@ -9,7 +9,7 @@ import numpy as np
 import random
 
 # include functions from srcTopDown package
-from srcTopDown.helper_functions.gmsh.parser import parse_msh
+from srcTopDown.helper_functions.gmsh.parser_2D import parse_msh
 
 #
 # Example with 2D geometry with hole and horizontal cohesive zone
@@ -17,7 +17,7 @@ from srcTopDown.helper_functions.gmsh.parser import parse_msh
 
 # mesh
 # ----
-mesh_file_name = "i.geo_simple.msh"
+mesh_file_name = "i.geo_complex.msh"
 curr_dir = os.path.dirname(os.path.abspath(__file__))
 mesh_file_path = os.path.join(curr_dir, mesh_file_name)
 
@@ -35,6 +35,7 @@ connBulk = mesh["conn_bulk"]
 connCohPart = mesh["conn_CohesiveParticle"]
 connCohInt = mesh["conn_CohesiveInterface"]
 # connChz = np.vstack((connCohParticle, connCohInterface))
+
 dofs = mesh["dofs"]
 nelemBulk = len(connBulk)
 nelemCohPart = len(connCohPart)
@@ -49,6 +50,9 @@ iip = np.concatenate(
     (
         dofs[mesh["LeftUpperLine"], 1],
         dofs[mesh["LeftLowerLine"], 1],
+        # dofs[mesh["ParticleLine"], 0],
+        # dofs[mesh["ParticleLine"], 1],
+        # dofs[mesh["BottomLine"][1:-2], 1],
         dofs[mesh["RightLine"][0:1], 0],
         dofs[mesh["RightLine"][0:1], 1],
         dofs[mesh["RightLine"][1:], 1]
@@ -156,7 +160,7 @@ fres = fext - fint
 
 # solve
 # -----
-ninc = 2501
+ninc = 10001
 max_iter = 200
 tangent = True
 
@@ -182,9 +186,12 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     # empty displacement update
     # du.fill(0.0)
     # update displacement
-    disp[mesh["LeftUpperLine"], 1] += (+0.3/ninc)
-    disp[mesh["LeftLowerLine"], 1] += (-0.3/ninc)
-    
+    disp[mesh["LeftUpperLine"], 1] += (+0.7/ninc)
+    disp[mesh["LeftLowerLine"], 1] += (-0.7/ninc)
+
+    # disp[mesh["ParticleLine"], 0] = 0.0  
+    # disp[mesh["ParticleLine"], 1] = 0.0 
+    # disp[mesh["BottomLine"][1:-2], 1] = 0.0
     disp[mesh["RightLine"][0:1], 0] = 0.0  # not strictly needed: default == 0
     disp[mesh["RightLine"][0:1], 1] = 0.0  # not strictly needed: default == 0
     disp[mesh["RightLine"][1:], 1] = 0.0  # not strictly needed: default == 0
@@ -268,7 +275,8 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
 
         # update shape functions
         # elemBulk.update_x(vector.AsElement(coor + disp, connBulk))
-        # elemChz.update_x(vector.AsElement(coor + disp, connChz))
+        elemCohPart.update_x(vector.AsElement(coor + disp, connCohPart))
+        elemCohInt.update_x(vector.AsElement(coor + disp, connCohInt))
 
     # accumulate strains and stresses
     epseq[ilam] = np.average(GMatElastoPlast.Epseq(np.average(GMatElastoPlast.Strain(matBulk.F), axis=1)))
@@ -291,6 +299,7 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
 # strain
 print(matCohInt.Damage)
 print(matCohPart.Damage)
+
 
 elemBulk0.symGradN_vector(ueBulk, matBulk.F)
 elemCohPart.relative_disp(ueCohPart, matCohPart.delta, matCohPart.ori)
@@ -388,7 +397,7 @@ if args.plot:
     # Add colorbar
     mappable = ScalarMappable(norm=plt.Normalize(), cmap=plt.colormaps["jet"])
     mappable.set_array(damage_all)
-    ax.set_xlim(0.2, 4.0)
+    ax.set_xlim(0.2, 4)
     ax.set_ylim(-1.0, 1.0)
     fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="Damage")
 

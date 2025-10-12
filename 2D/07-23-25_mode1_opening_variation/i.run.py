@@ -9,7 +9,7 @@ import numpy as np
 import random
 
 # include functions from srcTopDown package
-from srcTopDown.helper_functions.gmsh.parser import parse_msh
+from srcTopDown.helper_functions.gmsh.parser_2D import parse_msh
 
 #
 # Example with 2D geometry with hole and horizontal cohesive zone
