@@ -179,6 +179,7 @@ initial_guess = np.zeros_like(disp)
 total_increment = np.zeros_like(disp)
 elem_failed_prev = np.empty(nr_materials, dtype=object)
 to_be_deleted = np.empty(nr_materials, dtype=object)
+damage_prev = np.empty(nr_materials, dtype=object)
 
 for j in range(nr_materials):
     elem_failed_prev[j] = set()
@@ -194,7 +195,7 @@ F = np.array(
     )
 
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if len(failed_elem) > 65:
+    if ilam > 650:
         break
     #    damage_prev = mat.D_damage.copy()
     #    elem_to_delete = {100}
@@ -202,11 +203,13 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     #                                                                    fext, disp, elem_to_delete, K, fe, I2, coor)
     converged = False
 
-    mat.increment()
+    for i in range(nr_materials):
+        mat[i].increment()
+        damage_prev[i] = mat[i].D_damage.copy()
 
     disp += initial_guess
     total_increment = initial_guess.copy()
-    damage_prev = mat.D_damage.copy()
+    
     for iter in range(max_iter):  
         # deformation gradient
         K.clear()
@@ -270,7 +273,7 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     
     if converged:
          # print(total_increment)
-         initial_guess = 0.3 * total_increment
+         initial_guess = 0.0 * total_increment
          continue
     if not converged:
         raise RuntimeError(f"Load step {ilam} failed to converge.")

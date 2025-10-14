@@ -182,12 +182,12 @@ for dim, c_id in all_surfaces:
         # X=L (Right)
         elif (math.isclose(bbox[0], L_CUBE, abs_tol=TOL) and math.isclose(bbox[3], L_CUBE, abs_tol=TOL)):
             right_surface_tags.append(c_id)
-        # Y=0 (Back)
+        # Y=0 (Front)
         elif (math.isclose(bbox[1], 0.0, abs_tol=TOL) and math.isclose(bbox[4], 0.0, abs_tol=TOL)):
-            back_surface_tags.append(c_id)
-        # Y=L (Front)
-        elif (math.isclose(bbox[1], L_CUBE, abs_tol=TOL) and math.isclose(bbox[4], L_CUBE, abs_tol=TOL)):
             front_surface_tags.append(c_id)
+        # Y=L (Back)
+        elif (math.isclose(bbox[1], L_CUBE, abs_tol=TOL) and math.isclose(bbox[4], L_CUBE, abs_tol=TOL)):
+            back_surface_tags.append(c_id)
         # Z=0 (Bottom)
         elif (math.isclose(bbox[2], 0.0, abs_tol=TOL) and math.isclose(bbox[5], 0.0, abs_tol=TOL)):
             bottom_surface_tags.append(c_id)
@@ -237,19 +237,19 @@ all_corner_nodes = set(node_sets.values())
 edge_entities_map = {
     # Name : (BBOX_Target, Fixed_Axes)
     'froBot': ((0.0, 0.0, 0.0, L_CUBE, 0.0, 0.0), (1, 2)), # Fixed Y=0, Z=0. Running X (axis 0).
-    'froTop': ((0.0, L_CUBE, 0.0, L_CUBE, L_CUBE, 0.0), (1, 2)), # Fixed Y=L, Z=0. Running X (axis 0).
-    'bckBot': ((0.0, 0.0, L_CUBE, L_CUBE, 0.0, L_CUBE), (1, 2)), # Fixed Y=0, Z=L. Running X (axis 0).
+    'bckBot': ((0.0, L_CUBE, 0.0, L_CUBE, L_CUBE, 0.0), (1, 2)), # Fixed Y=L, Z=0. Running X (axis 0).
+    'froTop': ((0.0, 0.0, L_CUBE, L_CUBE, 0.0, L_CUBE), (1, 2)), # Fixed Y=0, Z=L. Running X (axis 0).
     'bckTop': ((0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (1, 2)), # Fixed Y=L, Z=L. Running X (axis 0).
 
-    'froLft': ((0.0, 0.0, 0.0, 0.0, L_CUBE, 0.0), (0, 2)), # Fixed X=0, Z=0. Running Y (axis 1).
-    'froRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE, 0.0), (0, 2)), # Fixed X=L, Z=0. Running Y (axis 1).
-    'bckLft': ((0.0, 0.0, L_CUBE, 0.0, L_CUBE, L_CUBE), (0, 2)), # Fixed X=0, Z=L. Running Y (axis 1).
-    'bckRgt': ((L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (0, 2)), # Fixed X=L, Z=L. Running Y (axis 1).
+    'botLft': ((0.0, 0.0, 0.0, 0.0, L_CUBE, 0.0), (0, 2)), # Fixed X=0, Z=0. Running Y (axis 1).
+    'botRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE, 0.0), (0, 2)), # Fixed X=L, Z=0. Running Y (axis 1).
+    'topLft': ((0.0, 0.0, L_CUBE, 0.0, L_CUBE, L_CUBE), (0, 2)), # Fixed X=0, Z=L. Running Y (axis 1).
+    'topRgt': ((L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (0, 2)), # Fixed X=L, Z=L. Running Y (axis 1).
     
-    'botLft': ((0.0, 0.0, 0.0, 0.0, 0.0, L_CUBE), (0, 1)), # Fixed X=0, Y=0. Running Z (axis 2).
-    'botRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, 0.0, L_CUBE), (0, 1)), # Fixed X=L, Y=0. Running Z (axis 2).
-    'topLft': ((0.0, L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE), (0, 1)), # Fixed X=0, Y=L. Running Z (axis 2).
-    'topRgt': ((L_CUBE, L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE), (0, 1)), # Fixed X=L, Y=L. Running Z (axis 2).
+    'froLft': ((0.0, 0.0, 0.0, 0.0, 0.0, L_CUBE), (0, 1)), # Fixed X=0, Y=0. Running Z (axis 2).
+    'froRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, 0.0, L_CUBE), (0, 1)), # Fixed X=L, Y=0. Running Z (axis 2).
+    'bckLft': ((0.0, L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE), (0, 1)), # Fixed X=0, Y=L. Running Z (axis 2).
+    'bckRgt': ((L_CUBE, L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE), (0, 1)), # Fixed X=L, Y=L. Running Z (axis 2).
 }
 
 for name, (bbox_target, fixed_axes) in edge_entities_map.items():
@@ -295,8 +295,8 @@ face_edges_map = {
 face_coord_map = {
     'lft': (0, 0.0),      # X=0
     'rgt': (0, L_CUBE),   # X=L_CUBE
-    'bck': (1, 0.0),      # Y=0
-    'fro': (1, L_CUBE),   # Y=L_CUBE
+    'bck': (1, L_CUBE),   # Y=L_CUBE
+    'fro': (1, 0.0),      # Y=0.0
     'bot': (2, 0.0),      # Z=0
     'top': (2, L_CUBE),   # Z=L_CUBE
 }
