@@ -26,13 +26,24 @@ t_interface = L_CUBE/n_elem_line
 # Side length of a single quadratic particle (l_particle x l_particle x l_particle)
 L_PARTICLE = 2.0
 # Target volume fraction (VF) of the particle phase (e.20 for 20%)
-VF_TARGET = 0.02
+VF_TARGET = 0.04
 # *** Elements per side of the particle (determines grid size) ***
 N_ELEM_PARTICLE_SIDE = L_PARTICLE * (n_elem_line/L_CUBE)
+
+# number of elements of the interface
+N_ELEM_INTERFACE = 1
+
+# Calculate the required element size based on particle dimension and desired elements
+L_ELEM = L_PARTICLE / N_ELEM_PARTICLE_SIDE    
+N_ELEM_CUBE_SIDE = round(L_CUBE / L_ELEM)
+V_cube = L_CUBE**3
+V_particle = L_PARTICLE**3
+V_target = V_cube * VF_TARGET
+
 # Maximum number of attempts to place a non-overlapping particle (set high for sparse packing)
 MAX_PLACEMENT_ATTEMPTS = 500
 # Seed for reproducibility (set to None for truly random placement)
-RANDOM_SEED = 42
+RANDOM_SEED = 10
 # Tolerance
 TOL = 1e-7
 
@@ -62,14 +73,6 @@ def get_sorted_open_edge_nodes_by_coords(edge_node_tags, fixed_axes):
 if RANDOM_SEED is not None:
     random.seed(RANDOM_SEED)
 
-# Calculate the required element size based on particle dimension and desired elements
-L_ELEM = L_PARTICLE / N_ELEM_PARTICLE_SIDE    
-N_ELEM_CUBE_SIDE = round(L_CUBE / L_ELEM)
-
-V_cube = L_CUBE**3
-V_particle = L_PARTICLE**3
-V_target = V_cube * VF_TARGET
-
 # Calculate the required number of non-overlapping particles
 N_particles_needed = math.ceil(V_target / V_particle)
 
@@ -87,16 +90,17 @@ particle_bboxes = []
 particles_placed = 0
 
 # Maximum grid index for particle placement
-max_grid_index = N_ELEM_CUBE_SIDE - N_ELEM_PARTICLE_SIDE
+max_grid_index = N_ELEM_CUBE_SIDE - N_ELEM_PARTICLE_SIDE - N_ELEM_INTERFACE
+min_grid_index = N_ELEM_INTERFACE
 
 while particles_placed < N_particles_needed:
     attempt = 0
     placed_this_iteration = False
 
     while attempt < MAX_PLACEMENT_ATTEMPTS:
-        x_grid_idx = random.randint(0, max_grid_index)
-        y_grid_idx = random.randint(0, max_grid_index)
-        z_grid_idx = random.randint(0, max_grid_index)
+        x_grid_idx = random.randint(min_grid_index, max_grid_index)
+        y_grid_idx = random.randint(min_grid_index, max_grid_index)
+        z_grid_idx = random.randint(min_grid_index, max_grid_index)
 
         # Snap coordinates to the grid
         x = x_grid_idx * L_ELEM
@@ -184,16 +188,16 @@ for dim, c_id in all_surfaces:
             right_surface_tags.append(c_id)
         # Y=0 (Front)
         elif (math.isclose(bbox[1], 0.0, abs_tol=TOL) and math.isclose(bbox[4], 0.0, abs_tol=TOL)):
-            front_surface_tags.append(c_id)
+            bottom_surface_tags.append(c_id)
         # Y=L (Back)
         elif (math.isclose(bbox[1], L_CUBE, abs_tol=TOL) and math.isclose(bbox[4], L_CUBE, abs_tol=TOL)):
-            back_surface_tags.append(c_id)
+            top_surface_tags.append(c_id)
         # Z=0 (Bottom)
         elif (math.isclose(bbox[2], 0.0, abs_tol=TOL) and math.isclose(bbox[5], 0.0, abs_tol=TOL)):
-            bottom_surface_tags.append(c_id)
+            front_surface_tags.append(c_id)
         # Z=L (Top)
         elif (math.isclose(bbox[2], L_CUBE, abs_tol=TOL) and math.isclose(bbox[5], L_CUBE, abs_tol=TOL)):
-            top_surface_tags.append(c_id)
+            back_surface_tags.append(c_id)
 
 face_tags_map = {
     'lft': list(set(left_surface_tags)), 
@@ -237,19 +241,19 @@ all_corner_nodes = set(node_sets.values())
 edge_entities_map = {
     # Name : (BBOX_Target, Fixed_Axes)
     'froBot': ((0.0, 0.0, 0.0, L_CUBE, 0.0, 0.0), (1, 2)), # Fixed Y=0, Z=0. Running X (axis 0).
-    'bckBot': ((0.0, L_CUBE, 0.0, L_CUBE, L_CUBE, 0.0), (1, 2)), # Fixed Y=L, Z=0. Running X (axis 0).
-    'froTop': ((0.0, 0.0, L_CUBE, L_CUBE, 0.0, L_CUBE), (1, 2)), # Fixed Y=0, Z=L. Running X (axis 0).
+    'froTop': ((0.0, L_CUBE, 0.0, L_CUBE, L_CUBE, 0.0), (1, 2)), # Fixed Y=L, Z=0. Running X (axis 0).
+    'bckBot': ((0.0, 0.0, L_CUBE, L_CUBE, 0.0, L_CUBE), (1, 2)), # Fixed Y=0, Z=L. Running X (axis 0).
     'bckTop': ((0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (1, 2)), # Fixed Y=L, Z=L. Running X (axis 0).
 
-    'botLft': ((0.0, 0.0, 0.0, 0.0, L_CUBE, 0.0), (0, 2)), # Fixed X=0, Z=0. Running Y (axis 1).
-    'botRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE, 0.0), (0, 2)), # Fixed X=L, Z=0. Running Y (axis 1).
-    'topLft': ((0.0, 0.0, L_CUBE, 0.0, L_CUBE, L_CUBE), (0, 2)), # Fixed X=0, Z=L. Running Y (axis 1).
-    'topRgt': ((L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (0, 2)), # Fixed X=L, Z=L. Running Y (axis 1).
+    'froLft': ((0.0, 0.0, 0.0, 0.0, L_CUBE, 0.0), (0, 2)), # Fixed X=0, Z=0. Running Y (axis 1).
+    'froRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE, 0.0), (0, 2)), # Fixed X=L, Z=0. Running Y (axis 1).
+    'bckLft': ((0.0, 0.0, L_CUBE, 0.0, L_CUBE, L_CUBE), (0, 2)), # Fixed X=0, Z=L. Running Y (axis 1).
+    'bckRgt': ((L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE, L_CUBE), (0, 2)), # Fixed X=L, Z=L. Running Y (axis 1).
     
-    'froLft': ((0.0, 0.0, 0.0, 0.0, 0.0, L_CUBE), (0, 1)), # Fixed X=0, Y=0. Running Z (axis 2).
-    'froRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, 0.0, L_CUBE), (0, 1)), # Fixed X=L, Y=0. Running Z (axis 2).
-    'bckLft': ((0.0, L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE), (0, 1)), # Fixed X=0, Y=L. Running Z (axis 2).
-    'bckRgt': ((L_CUBE, L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE), (0, 1)), # Fixed X=L, Y=L. Running Z (axis 2).
+    'botLft': ((0.0, 0.0, 0.0, 0.0, 0.0, L_CUBE), (0, 1)), # Fixed X=0, Y=0. Running Z (axis 2).
+    'botRgt': ((L_CUBE, 0.0, 0.0, L_CUBE, 0.0, L_CUBE), (0, 1)), # Fixed X=L, Y=0. Running Z (axis 2).
+    'topLft': ((0.0, L_CUBE, 0.0, 0.0, L_CUBE, L_CUBE), (0, 1)), # Fixed X=0, Y=L. Running Z (axis 2).
+    'topRgt': ((L_CUBE, L_CUBE, 0.0, L_CUBE, L_CUBE, L_CUBE), (0, 1)), # Fixed X=L, Y=L. Running Z (axis 2).
 }
 
 for name, (bbox_target, fixed_axes) in edge_entities_map.items():
@@ -295,10 +299,10 @@ face_edges_map = {
 face_coord_map = {
     'lft': (0, 0.0),      # X=0
     'rgt': (0, L_CUBE),   # X=L_CUBE
-    'bck': (1, L_CUBE),   # Y=L_CUBE
-    'fro': (1, 0.0),      # Y=0.0
-    'bot': (2, 0.0),      # Z=0
-    'top': (2, L_CUBE),   # Z=L_CUBE
+    'top': (1, L_CUBE),   # Y=L_CUBE
+    'bot': (1, 0.0),      # Y=0.0
+    'fro': (2, 0.0),      # Z=0
+    'bck': (2, L_CUBE),   # Z=L_CUBE
 }
 
 # The face_tags_map and face_edges_map remain the same as before
@@ -427,7 +431,7 @@ for i in range(num_elements):
             
             is_particle_element = True
             break
-        if (x_start - t_interface <= com_x <= x_end + t_interface and
+        elif (x_start - t_interface <= com_x <= x_end + t_interface and
             y_start - t_interface <= com_y <= y_end + t_interface and
             z_start - t_interface <= com_z <= z_end + t_interface):
             
@@ -435,7 +439,7 @@ for i in range(num_elements):
                     y_start <= com_y <= y_end and
                     z_start <= com_z <= z_end):
                 is_interface_element = True
-                break    
+                continue    
     if is_particle_element:
         particle_elem_tags.append(element_tags[0][i])
     elif is_interface_element:

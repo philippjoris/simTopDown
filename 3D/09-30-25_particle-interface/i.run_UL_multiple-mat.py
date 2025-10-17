@@ -1,18 +1,19 @@
 import argparse
 import sys
-import os
 
 import GMatTensor.Cartesian3d
 import GMatElastoPlasticFiniteStrainSimo.Cartesian3d as GMat
 import GooseFEM
 import numpy as np
-import random
+import os
 from srcTopDown.helper_functions.element_erosion import element_erosion_3D_PBC
+from srcTopDown.helper_functions.nodes_periodic import nodesPeriodic3D
 from srcTopDown.helper_functions.gmsh.parser_3D import parse_msh
 import srcTopDown.plot_functions.RVE_plot_3d as pf
-
 # mesh
 # ----
+
+# define mesh
 print("running a GooseFEM static example...")
 mesh_file_name = "i.geo_composite_cube.msh2"
 json_file_name = "i.geo_element_sets.json"
@@ -34,6 +35,7 @@ ndim = 3
 conn = np.empty(nr_materials, dtype=object)
 nelem = np.empty(nr_materials, dtype=object)
 elem = np.empty(nr_materials, dtype=object)
+elem0 = np.empty(nr_materials, dtype=object)
 mat = np.empty(nr_materials, dtype=object)
 fe = np.empty(nr_materials, dtype=object)
 ue = np.empty(nr_materials, dtype=object)
@@ -54,38 +56,63 @@ nelem[0] = len(conn[0])
 nelem[1] = len(conn[1])
 nelem[2] = len(conn[2])
 
-disp = np.zeros_like(coor)
-fext = np.zeros_like(coor)
+# create control nodes
+control = GooseFEM.Tyings.Control(coor, dofs)
 
-# list of prescribed DOFs
+# add control nodes
+coor = control.coor
+
+# list of prescribed DOFs (fixed node + control nodes)
 iip = np.concatenate(
     (
-        dofs[mesh["face_rgt"], 0],       
-        dofs[mesh["face_lft"], 0], 
-        dofs[mesh["face_bot"], 1], 
-        dofs[mesh["face_fro"], 2]
+    dofs[mesh['corner_froBotLft'], 0],
+    dofs[mesh['corner_froBotLft'], 1],
+    dofs[mesh['corner_froBotLft'], 2],    
+    control.controlDofs[0],
+    control.controlDofs[1],
+    control.controlDofs[2]
     )
 )
 
-# vector definition
-vector = GooseFEM.VectorPartitioned(dofs, iip)
+# ----- NODES PERIODIC?? -----
+tyinglist = nodesPeriodic3D(mesh)
+# ----- NODES PERIODIC?? -----
 
-# allocate system matrix
-K = GooseFEM.MatrixPartitioned(dofs, iip)
-Solver = GooseFEM.MatrixPartitionedSolver()
+
+# initialize my periodic boundary condition class
+periodicity = GooseFEM.Tyings.Periodic(coor, control.dofs, control.controlDofs, tyinglist, iip)
+dofs = periodicity.dofs
 
 # simulation variables
 # --------------------
+
+# vector definition
+vector = GooseFEM.VectorPartitionedTyings(dofs, periodicity.Cdu, periodicity.Cdp, periodicity.Cdi)
+
 # element definition
 for i in range(nr_materials):
     elem[i] = GooseFEM.Element.Hex8.Quadrature(vector.AsElement(coor, conn[i]))
+    elem0[i] = GooseFEM.Element.Hex8.Quadrature(vector.AsElement(coor, conn[i]))
 nipBulk = elem[0].nip
 
+# nodal quantities
+disp = np.zeros_like(coor)
+du = np.zeros_like(coor)  # iterative displacement update
+fint = np.zeros_like(coor)  # internal force
+fext = np.zeros_like(coor)  # external force
+
+
+# DOF values
+Fext = np.zeros([periodicity.nni])
+Fint = np.zeros([periodicity.nni])
+
+# material definition
+# -------------------
 # matrix material
 mat[0] = GMat.LinearHardeningDamage2d(
     K=np.ones([nelem[0], nipBulk])*170,
     G=np.ones([nelem[0], nipBulk])*80,
-    tauy0=np.ones([nelem[0], nipBulk])*10.0,
+    tauy0=np.ones([nelem[0], nipBulk])*1.0,
     H=np.ones([nelem[0], nipBulk])*1.0,
     D1=np.ones([nelem[0], nipBulk])*0.1,
     D2=np.ones([nelem[0], nipBulk])*0.2,
@@ -94,9 +121,9 @@ mat[0] = GMat.LinearHardeningDamage2d(
 
 # interface material
 mat[1] = GMat.LinearHardeningDamage2d(
-    K=np.ones([nelem[1], nipBulk])*170,
-    G=np.ones([nelem[1], nipBulk])*80,
-    tauy0=np.ones([nelem[1], nipBulk])*10.0,
+    K=np.ones([nelem[1], nipBulk])*70,
+    G=np.ones([nelem[1], nipBulk])*30,
+    tauy0=np.ones([nelem[1], nipBulk])*100.0,
     H=np.ones([nelem[1], nipBulk])*1.0,
     D1=np.ones([nelem[1], nipBulk])*0.1,
     D2=np.ones([nelem[1], nipBulk])*0.2,
@@ -105,14 +132,17 @@ mat[1] = GMat.LinearHardeningDamage2d(
 
 # particle material
 mat[2] = GMat.LinearHardeningDamage2d(
-    K=np.ones([nelem[2], nipBulk])*170,
-    G=np.ones([nelem[2], nipBulk])*80,
+    K=np.ones([nelem[2], nipBulk])*250,
+    G=np.ones([nelem[2], nipBulk])*110,
     tauy0=np.ones([nelem[2], nipBulk])*10.0,
     H=np.ones([nelem[2], nipBulk])*1.0,
     D1=np.ones([nelem[2], nipBulk])*0.1,
     D2=np.ones([nelem[2], nipBulk])*0.2,
     D3=np.ones([nelem[2], nipBulk])*-1.7    
     )
+# allocate system matrix
+K = GooseFEM.MatrixPartitionedTyings(dofs, periodicity.Cdu, periodicity.Cdp)
+Solver = GooseFEM.MatrixPartitionedTyingsSolver()
 
 K.clear()
 for i in range(nr_materials):
@@ -134,115 +164,69 @@ for i in range(1,nr_materials):
 
 # initial residual
 fres = fext - fint
-
-
-# -------------------- PLOT UNDEFORMED MESH ------------------------------------
-parser = argparse.ArgumentParser()
-parser.add_argument("--plot", action="store_true", help="Plot result")
-parser.add_argument("--save", action="store_true", help="Save plot (plot not shown)")
-args = parser.parse_args(sys.argv[1:])
-if args.plot:
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    import matplotlib.cm as cm
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
-    from matplotlib.ticker import FormatStrFormatter
-
-    plt.style.use(["goose", "goose-latex"])
-
-    # Use a colormap with distinct colors
-    cmap = plt.colormaps["tab10"]
-
-    faces = [
-        [0, 1, 2, 3],  # bottom face
-        [4, 5, 6, 7],  # top face
-        [0, 1, 5, 4],  # front face
-        [1, 2, 6, 5],  # right face
-        [2, 3, 7, 6],  # back face
-        [3, 0, 4, 7]   # left face
-    ]
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-
-    # Loop over material groups
-    for i, (m, elements) in enumerate(zip(mat, conn)):
-        color = cmap(i / len(mat))  # assign one color per material group
-        for element in elements:    # elements belonging to this material
-            verts = np.array(coor[element])
-            for face in faces:
-                face_verts = verts[face].tolist()
-                poly = Poly3DCollection([face_verts],
-                                        facecolors=[color],
-                                        edgecolor="k",
-                                        linewidths=0.5)
-                ax.add_collection3d(poly)
-
-    # Labels and scaling
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.set_box_aspect([1, 1, 1])
-    ax.auto_scale_xyz(coor[:, 0], coor[:, 1], coor[:, 2])
-
-    # Legend: one entry per material
-    labels = ["Matrix", "Interface", "Particle"]
-    handles = [plt.Rectangle((0,0),1,1,color=cmap(i/len(labels))) for i in range(len(labels))]
-    ax.legend(handles, labels,
-            loc="center left",      
-            bbox_to_anchor=(-0.2, 0.0)) 
-
-    fig.savefig('undeformed_mesh.pdf')
-# -----------------------------------------------------------------------------------
-
 # solve
 # -----
-ninc = 501
-max_iter = 20
+ninc = 701
+max_iter = 50
 tangent = True
 
 # initialize stress/strain arrays for eq. plastic strain / mises stress plot
 epseq = np.zeros(ninc)
 sigeq = np.zeros(ninc)
 
-du = np.zeros_like(disp)
-
-
-residual_history = []
-
+# ue = vector.AsElement(disp)
+# du = np.zeros_like(disp)
 initial_guess = np.zeros_like(disp)
+total_increment = np.zeros_like(disp)
 elem_failed_prev = np.empty(nr_materials, dtype=object)
 to_be_deleted = np.empty(nr_materials, dtype=object)
+damage_prev = np.empty(nr_materials, dtype=object)
 
 for j in range(nr_materials):
     elem_failed_prev[j] = set()
     to_be_deleted[j] = []
 
-for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    # update displacement
-    # disp[mesh["face_rgt"], 1] = 0.0
-    disp[mesh["face_rgt"], 0] += 1.0/ninc   
-    disp[mesh["face_lft"], 0] = 0.0  
-    disp[mesh["face_bot"], 1] = 0.0  
-    disp[mesh["face_fro"], 2] = 0.0  
-    
-    for i in range(nr_materials):
-        mat[i].increment()
+# deformation gradient
+F = np.array(
+        [
+            [1.0 + (0.1/ninc), 0.0, 0.0],
+            [0.0, 1.0 / (1.0 + (0.1/ninc)), 0.0],
+            [0.0, 0.0, 1.0]
+        ]
+    )
 
-    disp = vector.NodeFromPartitioned(vector.AsDofs_u(disp) + vector.AsDofs_u(initial_guess), vector.AsDofs_p(disp))
-    
-    for i in range(len(damage_prev)):
-        damage_prev[i] = mat[i].D_damage.copy()
-    total_increment = initial_guess.copy()
+# pre-process
+# plot
+# ----
+parser = argparse.ArgumentParser()
+parser.add_argument("--plot", action="store_true", help="Plot result")
+parser.add_argument("--save", action="store_true", help="Save plot (plot not shown)")
+args = parser.parse_args(sys.argv[1:])
+if args.plot:    
+    import matplotlib.pyplot as plt
+    plt.style.use(["goose", "goose-latex"])
+    pf.plot_materials(coor, conn, mat, args, labels=["Matrix", "Interface", "Particle"])
+
+for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
+    #    damage_prev = mat.D_damage.copy()
+    #    elem_to_delete = {100}
+    #    disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
+    #                                                                    fext, disp, elem_to_delete, K, fe, I2, coor)
     converged = False
 
-    for iter in range(max_iter): 
-        # update element wise displacments
+    for i in range(nr_materials):
+        mat[i].increment()
+        damage_prev[i] = mat[i].D_damage.copy()
+
+    disp += initial_guess
+    total_increment = initial_guess.copy()
+    
+    for iter in range(max_iter):  
+        # deformation gradient
         K.clear()
         for i in range(nr_materials):
             ue[i] = vector.AsElement(disp, conn[i]) 
-            elem[i].symGradN_vector(ue[i], mat[i].F)
+            elem0[i].symGradN_vector(ue[i], mat[i].F)
             mat[i].F += I2[i]
             mat[i].refresh()
             fe[i] = elem[i].Int_gradN_dot_tensor2_dV(mat[i].Sig)
@@ -254,55 +238,59 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
         for i in range(1,nr_materials):
             fint += vector.AssembleNode(fe[i], conn[i])
 
-        fres = -fint
+        fres = fext - fint
 
         if iter > 0:
-            # residual 
-            fres_u = -vector.AsDofs_u(fint)
-            
-            res_norm = np.linalg.norm(fres_u) 
+            # - internal/external force as DOFs (account for periodicity)
+            vector.asDofs_i(fext, Fext)
+            vector.asDofs_i(fint, Fint)
+            # - extract reaction force
+            vector.copy_p(Fint, Fext)
+            # - norm of the residual and the reaction force
+            nfres = np.sum(np.abs(Fext - Fint))
+            nfext = np.sum(np.abs(Fext))
+            # - relative residual, for convergence check
+            if nfext:
+                res = nfres / nfext
+            else:
+                res = nfres
 
-            residual_history.append(res_norm)
-
-            if res_norm < 1e-07:
-                print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res_norm}")
-                converged = True                
+            if res < 1e-06:
+                print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res}")
+                converged = True
                 break
 
-        Solver.solve(K, fres, du)
+        du.fill(0.0)
 
-        # add newly found delta_u to total increment
+        # initialise displacement update
+        if iter == 0:
+            du[control.controlNodes, 0] = (F[0,:] - np.eye(3)[0, :]) 
+            du[control.controlNodes, 1] = (F[1,:] - np.eye(3)[1, :])  
+            du[control.controlNodes, 2] = (F[2,:] - np.eye(3)[2, :])              
+
+        # solve
+        Solver.solve(K, fres, du)
+        
+        # add delta u
+        disp += du
         total_increment += du
 
-        # update displacement vector
-        disp += du
+        for i in range(nr_materials):
+            elem[i].update_x(vector.AsElement(coor + disp, conn[i]))
 
     # accumulate strains and stresses
     epseq[ilam] = np.average(GMat.Epseq(np.average(GMat.Strain(mat[0].F), axis=1)))
     sigeq[ilam] = np.average(GMat.Sigeq(np.average(mat[0].Sig, axis=1)))
     
     if converged:
-        residual_history.clear()
-        initial_guess = 1.0 * total_increment
-        continue
+         # print(total_increment)
+         initial_guess = 0.3 * total_increment
+         continue
     if not converged:
-        print (f"WARNING: Increment {ilam}/{ninc} did not converged!")
-        break
+        raise RuntimeError(f"Load step {ilam} failed to converge.")
 
-
-# post-process
-# plot
-# ----
-import matplotlib.pyplot as plt
-plt.style.use(["goose", "goose-latex"])
-plot_data = pf.prepare_plot_data(elem, mat, conn, coor, disp)
-pf.plot_3d(plot_data, "stress", args)
-pf.plot_3d(plot_data, "strain", args)
-pf.plot_3d(plot_data, "damage", args)
-pf.plot_3d(plot_data, "triaxiality", args)
+# post-processing
 if args.plot:
-    import matplotlib.pyplot as plt
-    plt.style.use(["goose", "goose-latex"])
     plot_data = pf.prepare_plot_data(elem, mat, conn, coor, disp)
     pf.plot_3d(plot_data, "stress", args)
     pf.plot_3d(plot_data, "strain", args)

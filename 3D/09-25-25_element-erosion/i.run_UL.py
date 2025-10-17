@@ -6,7 +6,9 @@ import GMatElastoPlasticFiniteStrainSimo.Cartesian3d as GMat
 import GooseFEM
 import numpy as np
 import random
+import srcTopDown.plot_functions.RVE_plot_3d as pf
 from srcTopDown.helper_functions.element_erosion import element_erosion_3D_PBC
+from srcTopDown.helper_functions.periodic_testGoose import nodesPeriodic3D
 # mesh
 # ----
 
@@ -18,7 +20,8 @@ mesh = GooseFEM.Mesh.Hex8.Regular(10, 10, 10)
 nelem = mesh.nelem
 nne = mesh.nne
 ndim = mesh.ndim
-tyinglist = mesh.nodesPeriodic
+#tyinglist = mesh.nodesPeriodic
+tyinglist = nodesPeriodic3D(mesh)
 
 # mesh definition
 coor = mesh.coor
@@ -83,7 +86,7 @@ def randomizeMicrostr(nelem, nip, fraction_soft, value_hard, value_soft):
     return array
 # -------------------
 # mat = GMat.Elastic2d(K=np.ones([nelem, nip]), G=np.ones([nelem, nip]))
-tauy0 = randomizeMicrostr(nelem, nip, 0.7, 3.0, 0.3)
+tauy0 = randomizeMicrostr(nelem, nip, 0.0, 0.7, 0.7)
 mat = GMat.LinearHardeningDamage2d(
     K=np.ones([nelem, nip])*170,
     G=np.ones([nelem, nip])*80,
@@ -128,8 +131,6 @@ F = np.array(
     )
 
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if len(failed_elem) > 65:
-        break
     #    damage_prev = mat.D_damage.copy()
     #    elem_to_delete = {100}
     #    disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
@@ -180,27 +181,27 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
             if res < 1e-06:
                 print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res}")
                 converged = True
-                if (np.amax(mat.D_damage) < 1):
-                    break
-                else:
-                    curr_failed = failed_elem.copy()
-                    # delete elements with damage > 1 and append to vector
-                    for k, obj in enumerate(mat.D_damage):
-                        if any(IP >= 1 for IP in obj):
-                            curr_failed.add(k)
-                            # break
+                #if (np.amax(mat.D_damage) < 1):
+                #    break
+                #else:
+                #    curr_failed = failed_elem.copy()
+                #    # delete elements with damage > 1 and append to vector
+                #    for k, obj in enumerate(mat.D_damage):
+                #        if any(IP >= 1 for IP in obj):
+                #            curr_failed.add(k)
+                #            # break
 
-                    newly_failed = curr_failed - failed_elem
-                    failed_elem = curr_failed.copy()
+                #    newly_failed = curr_failed - failed_elem
+                #    failed_elem = curr_failed.copy()
 
-                    to_be_deleted.extend(list(newly_failed))
+                #    to_be_deleted.extend(list(newly_failed))
 
-                    if to_be_deleted:
-                        print(f"INFO: Element(s) failed: {to_be_deleted}.")
-                        elem_to_delete = {to_be_deleted.pop(0)} 
-                        print( f"INFO: Deleting element {elem_to_delete}.")
-                        disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe, 
-                                                                 fext, disp, elem_to_delete, K, fe, I2, coor)
+                #    if to_be_deleted:
+                #        print(f"INFO: Element(s) failed: {to_be_deleted}.")
+                #        elem_to_delete = {to_be_deleted.pop(0)} 
+                #        print( f"INFO: Deleting element {elem_to_delete}.")
+                #        disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe, 
+                #                                                 fext, disp, elem_to_delete, K, fe, I2, coor)
                 break
 
         du.fill(0.0)

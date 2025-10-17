@@ -1,244 +1,232 @@
 import argparse
 import sys
+import os
 
 import GMatTensor.Cartesian3d
 import GMatElastoPlasticFiniteStrainSimo.Cartesian3d as GMat
 import GooseFEM
 import numpy as np
 import random
-import srcTopDown.plot_functions.RVE_plot_3d as pf
 from srcTopDown.helper_functions.element_erosion import element_erosion_3D_PBC
-from srcTopDown.helper_functions.periodic_testGoose import nodesPeriodic3D
+from srcTopDown.helper_functions.gmsh.parser_3D import parse_msh
+import srcTopDown.plot_functions.RVE_plot_3d as pf
+
 # mesh
 # ----
-
-# define mesh
-print("running a GooseFEM static PBC example...")
+print("running a GooseFEM static example...")
 mesh = GooseFEM.Mesh.Hex8.Regular(10, 10, 10)
 
 # mesh dimensions
 nelem = mesh.nelem
 nne = mesh.nne
 ndim = mesh.ndim
-#tyinglist = mesh.nodesPeriodic
-tyinglist = nodesPeriodic3D(mesh)
 
 # mesh definition
 coor = mesh.coor
 conn = mesh.conn
 dofs = mesh.dofs
+disp = np.zeros_like(coor)
+fext = np.zeros_like(coor)
 
-# create control nodes
-control = GooseFEM.Tyings.Control(coor, dofs)
+# list of prescribed DOFs
+iip = np.concatenate(
+    (
+        dofs[mesh.nodesRightFace, 0],
+        dofs[mesh.nodesLeftFace, 0], 
+        dofs[mesh.nodesBottomFace, 1], 
+        dofs[mesh.nodesFrontFace, 2]
+    )
+)
 
-# add control nodes
-coor = control.coor
+# vector definition
+vector = GooseFEM.VectorPartitioned(dofs, iip)
 
-# list of prescribed DOFs (fixed node + control nodes)
-iip = np.concatenate((
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 0],
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 1],
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 2],    
-    control.controlDofs[0],
-    control.controlDofs[1],
-    control.controlDofs[2]
-))
-
-# initialize my periodic boundary condition class
-periodicity = GooseFEM.Tyings.Periodic(coor, control.dofs, control.controlDofs, tyinglist, iip)
-dofs = periodicity.dofs
+# allocate system matrix
+K = GooseFEM.MatrixPartitioned(dofs, iip)
+Solver = GooseFEM.MatrixPartitionedSolver()
 
 # simulation variables
 # --------------------
-
-# vector definition
-vector = GooseFEM.VectorPartitionedTyings(dofs, periodicity.Cdu, periodicity.Cdp, periodicity.Cdi)
-
 # element definition
-elem0 = GooseFEM.Element.Hex8.Quadrature(vector.AsElement(coor, conn))
 elem = GooseFEM.Element.Hex8.Quadrature(vector.AsElement(coor, conn))
-nip = elem.nip
-
-# nodal quantities
-disp = np.zeros_like(coor)
-du = np.zeros_like(coor)  # iterative displacement update
-fint = np.zeros_like(coor)  # internal force
-fext = np.zeros_like(coor)  # external force
-
-# element vectors / matrix
-ue = vector.AsElement(disp, conn)
-coore = vector.AsElement(coor, conn)
-fe = np.empty([nelem, nne, ndim])
-Ke = np.empty([nelem, nne * ndim, nne * ndim])
-
-# DOF values
-Fext = np.zeros([periodicity.nni])
-Fint = np.zeros([periodicity.nni])
-
-# material definition
-# -------------------
-def randomizeMicrostr(nelem, nip, fraction_soft, value_hard, value_soft):
-    array = np.ones([nelem, nip])*value_hard
-    nsoft = round(fraction_soft * nelem)
-    softelem = random.sample(range(nelem), k=nsoft)
-    for elem in softelem:
-        array[elem] *= (value_soft/value_hard)
-    return array
-# -------------------
-# mat = GMat.Elastic2d(K=np.ones([nelem, nip]), G=np.ones([nelem, nip]))
-tauy0 = randomizeMicrostr(nelem, nip, 0.7, 3.0, 0.3)
+nipBulk = elem.nip
+# matrix material
 mat = GMat.LinearHardeningDamage2d(
-    K=np.ones([nelem, nip])*170,
-    G=np.ones([nelem, nip])*80,
-    tauy0=tauy0,
-    H=np.ones([nelem, nip])*1,
-    D1=np.ones([nelem, nip])*0.1,
-    D2=np.ones([nelem, nip])*0.2,
-    D3=np.ones([nelem, nip])*-1.7
+    K=np.ones([nelem, nipBulk])*170,
+    G=np.ones([nelem, nipBulk])*80,
+    tauy0=np.ones([nelem, nipBulk])*10.0,
+    H=np.ones([nelem, nipBulk])*1.0,
+    D1=np.ones([nelem, nipBulk])*0.1,
+    D2=np.ones([nelem, nipBulk])*0.2,
+    D3=np.ones([nelem, nipBulk])*-1.7    
     )
 
-# allocate system matrix
-K = GooseFEM.MatrixPartitionedTyings(dofs, periodicity.Cdu, periodicity.Cdp)
-Solver = GooseFEM.MatrixPartitionedTyingsSolver()
+K.clear()
+I2 = GMatTensor.Cartesian3d.Array2d(mat.shape).I2  
+ue = vector.AsElement(disp, conn)
+coore = vector.AsElement(coor, conn) 
+elem.gradN_vector((ue), mat.F)
+mat.F += I2
+mat.refresh()
+fe = elem.Int_gradN_dot_tensor2_dV(mat.Sig)
+Ke = elem.Int_gradN_dot_tensor4_dot_gradNT_dV(mat.C)
+K.assemble(Ke, conn)
+K.finalize()
 
-# array of unit tensor
-I2 = GMatTensor.Cartesian3d.Array2d(mat.shape).I2
+# internal force of the right hand side per element and assembly
+fint = vector.AssembleNode(fe, conn)
+
+# initial residual
+fres = fext - fint
+
+
+# -------------------- PLOT UNDEFORMED MESH ------------------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--plot", action="store_true", help="Plot result")
+parser.add_argument("--save", action="store_true", help="Save plot (plot not shown)")
+args = parser.parse_args(sys.argv[1:])
+if args.plot:
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    import matplotlib.cm as cm
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    from matplotlib.ticker import FormatStrFormatter
+
+    plt.style.use(["goose", "goose-latex"])
+
+    # Use a colormap with distinct colors
+    cmap = plt.colormaps["tab10"]
+
+    faces = [
+        [0, 1, 2, 3],  # bottom face
+        [4, 5, 6, 7],  # top face
+        [0, 1, 5, 4],  # front face
+        [1, 2, 6, 5],  # right face
+        [2, 3, 7, 6],  # back face
+        [3, 0, 4, 7]   # left face
+    ]
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Loop over material groups
+    for i, element in enumerate(conn):
+        color = cmap(i / 1)  # assign one color per material group
+        verts = np.array(coor[element])
+        for face in faces:
+            face_verts = verts[face].tolist()
+            poly = Poly3DCollection([face_verts],
+                                    facecolors=[color],
+                                    edgecolor="k",
+                                    linewidths=0.5)
+            ax.add_collection3d(poly)
+
+    # Labels and scaling
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_box_aspect([1, 1, 1])
+    ax.auto_scale_xyz(coor[:, 0], coor[:, 1], coor[:, 2])
+
+    # Legend: one entry per material
+    labels = ["Matrix", "Interface", "Particle"]
+    handles = [plt.Rectangle((0,0),1,1,color=cmap(i/len(labels))) for i in range(len(labels))]
+    ax.legend(handles, labels,
+            loc="center left",      
+            bbox_to_anchor=(-0.2, 0.0)) 
+
+    fig.savefig('undeformed_mesh.pdf')
+# -----------------------------------------------------------------------------------
 
 # solve
 # -----
-ninc = 701
-max_iter = 50
+ninc = 1001
+max_iter = 20
 tangent = True
 
 # initialize stress/strain arrays for eq. plastic strain / mises stress plot
 epseq = np.zeros(ninc)
 sigeq = np.zeros(ninc)
 
-# ue = vector.AsElement(disp)
-# du = np.zeros_like(disp)
+du = np.zeros_like(disp)
+
+
+residual_history = []
+
 initial_guess = np.zeros_like(disp)
-total_increment = np.zeros_like(disp)
-failed_elem = set()
+
+elem_failed_prev = []
 to_be_deleted = []
 
-# deformation gradient
-F = np.array(
-        [
-            [1.0 + (0.10/ninc), 0.0, 0.0],
-            [0.0, 1.0 / (1.0 + (0.10/ninc)), 0.0],
-            [0.0, 0.0, 1.0]
-        ]
-    )
-
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    #    damage_prev = mat.D_damage.copy()
-    #    elem_to_delete = {100}
-    #    disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
-    #                                                                    fext, disp, elem_to_delete, K, fe, I2, coor)
-    converged = False
-
+    # update displacement
+    # disp[mesh["face_rgt"], 1] = 0.0
+    disp[mesh.nodesRightFace, 0] += 2.0/ninc  
+    disp[mesh.nodesLeftFace, 0] = 0.0  
+    disp[mesh.nodesBottomFace, 1] = 0.0  
+    disp[mesh.nodesFrontFace, 2] = 0.0  
+    
     mat.increment()
 
-    disp += initial_guess
+    disp = vector.NodeFromPartitioned(vector.AsDofs_u(disp) + vector.AsDofs_u(initial_guess), vector.AsDofs_p(disp))
+    
     total_increment = initial_guess.copy()
-    damage_prev = mat.D_damage.copy()
-    for iter in range(max_iter):  
-        # deformation gradient
-        ue = vector.AsElement(disp, conn)
-        elem0.symGradN_vector(ue, mat.F)
-        mat.F += I2
-        mat.refresh()  
+    converged = False
 
-        # internal force
+    for iter in range(max_iter): 
+        # update element wise displacments
+        K.clear()
+        ue = vector.AsElement(disp, conn) 
+        elem.symGradN_vector(ue, mat.F)
+        mat.F += I2
+        mat.refresh()
         fe = elem.Int_gradN_dot_tensor2_dV(mat.Sig)
+        Ke = elem.Int_gradN_dot_tensor4_dot_gradNT_dV(mat.C) 
+        K.assemble(Ke, conn) 
+        K.finalize(stabilize=True)
+
         fint = vector.AssembleNode(fe, conn)
 
-        # stiffness matrix
-        Ke = elem.Int_gradN_dot_tensor4_dot_gradNT_dV(mat.C)
-        K.clear()
-        K.assemble(Ke, conn)
-        K.finalize(stabilize=True)
-        # residual
-        fres = fext - fint
+        fres = -fint
 
         if iter > 0:
-            # - internal/external force as DOFs (account for periodicity)
-            vector.asDofs_i(fext, Fext)
-            vector.asDofs_i(fint, Fint)
-            # - extract reaction force
-            vector.copy_p(Fint, Fext)
-            # - norm of the residual and the reaction force
-            nfres = np.sum(np.abs(Fext - Fint))
-            nfext = np.sum(np.abs(Fext))
-            # - relative residual, for convergence check
-            if nfext:
-                res = nfres / nfext
-            else:
-                res = nfres
-            # print (f"Iter {iter}, Residual = {res_norm}")
-            if iter > 10:
-                a = 1
-            if res < 1e-06:
-                print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res}")
-                converged = True
-                #if (np.amax(mat.D_damage) < 1):
-                #    break
-                #else:
-                #    curr_failed = failed_elem.copy()
-                #    # delete elements with damage > 1 and append to vector
-                #    for k, obj in enumerate(mat.D_damage):
-                #        if any(IP >= 1 for IP in obj):
-                #            curr_failed.add(k)
-                #            # break
+            # residual 
+            fres_u = -vector.AsDofs_u(fint)
+            
+            res_norm = np.linalg.norm(fres_u) 
 
-                #    newly_failed = curr_failed - failed_elem
-                #    failed_elem = curr_failed.copy()
+            residual_history.append(res_norm)
 
-                #    to_be_deleted.extend(list(newly_failed))
-
-                #    if to_be_deleted:
-                #        print(f"INFO: Element(s) failed: {to_be_deleted}.")
-                #        elem_to_delete = {to_be_deleted.pop(0)} 
-                #        print( f"INFO: Deleting element {elem_to_delete}.")
-                #        disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe, 
-                #                                                 fext, disp, elem_to_delete, K, fe, I2, coor)
+            if res_norm < 1e-07:
+                print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res_norm}")
+                converged = True                
                 break
 
-        du.fill(0.0)
-
-        # initialise displacement update
-        if iter == 0:
-            du[control.controlNodes, 0] = (F[0,:] - np.eye(3)[0, :]) 
-            du[control.controlNodes, 1] = (F[1,:] - np.eye(3)[1, :])  
-            du[control.controlNodes, 2] = (F[2,:] - np.eye(3)[2, :])              
-
-        # solve
         Solver.solve(K, fres, du)
-        
-        # add delta u
-        disp += du
+
+        # add newly found delta_u to total increment
         total_increment += du
 
-        elem.update_x(vector.AsElement(coor + disp, conn))
+        # update displacement vector
+        disp += du
 
     # accumulate strains and stresses
     epseq[ilam] = np.average(GMat.Epseq(np.average(GMat.Strain(mat.F), axis=1)))
     sigeq[ilam] = np.average(GMat.Sigeq(np.average(mat.Sig, axis=1)))
     
     if converged:
-         # print(total_increment)
-         initial_guess = 0.3 * total_increment
+        residual_history.clear()
+        initial_guess = 1.0 * total_increment
+        continue
     if not converged:
-        raise RuntimeError(f"Load step {ilam} failed to converge.")
+        print (f"WARNING: Increment {ilam}/{ninc} did not converged!")
+        break
 
 
 # post-process
 # plot
 # ----
-parser = argparse.ArgumentParser()
-parser.add_argument("--plot", action="store_true", help="Plot result")
-parser.add_argument("--save", action="store_true", help="Save plot (plot not shown)")
-args = parser.parse_args(sys.argv[1:])
 
 if args.plot:
     import matplotlib.pyplot as plt

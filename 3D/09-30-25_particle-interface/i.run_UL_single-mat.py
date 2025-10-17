@@ -8,25 +8,39 @@ import numpy as np
 import random
 import srcTopDown.plot_functions.RVE_plot_3d as pf
 from srcTopDown.helper_functions.element_erosion import element_erosion_3D_PBC
-from srcTopDown.helper_functions.periodic_testGoose import nodesPeriodic3D
+from srcTopDown.helper_functions.nodes_periodic import nodesPeriodic3D
+from srcTopDown.helper_functions.gmsh.parser_3D import parse_msh
+import os
 # mesh
 # ----
 
 # define mesh
-print("running a GooseFEM static PBC example...")
-mesh = GooseFEM.Mesh.Hex8.Regular(10, 10, 10)
+# define mesh
+print("running a GooseFEM static example...")
+mesh_file_name = "i.geo_uniform_cube.msh2"
+json_file_name = "i.geo_uniform_sets.json"
+curr_dir = os.path.dirname(os.path.abspath(__file__))
+mesh_file_path = os.path.join(curr_dir, mesh_file_name)
+json_file_path = os.path.join(curr_dir, json_file_name)
 
-# mesh dimensions
-nelem = mesh.nelem
-nne = mesh.nne
-ndim = mesh.ndim
+if os.path.exists(mesh_file_path) and os.path.exists(json_file_path):
+    print(f"Parsing mesh: {mesh_file_path}")
+    mesh = parse_msh( 
+        msh_filepath=mesh_file_path, json_filepath=json_file_path
+    )
+else:
+    print(f"Error: Mesh file not found at {mesh_file_path}")
+
 #tyinglist = mesh.nodesPeriodic
 tyinglist = nodesPeriodic3D(mesh)
 
 # mesh definition
-coor = mesh.coor
-conn = mesh.conn
-dofs = mesh.dofs
+coor = mesh["coor"]
+conn = mesh["conn_matrix"]
+dofs = mesh["dofs"]
+
+# mesh dimensions
+nelem = len(conn)
 
 # create control nodes
 control = GooseFEM.Tyings.Control(coor, dofs)
@@ -36,9 +50,9 @@ coor = control.coor
 
 # list of prescribed DOFs (fixed node + control nodes)
 iip = np.concatenate((
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 0],
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 1],
-    dofs[np.array([mesh.nodesFrontBottomLeftCorner]), 2],    
+    dofs[mesh['corner_froBotLft'], 0],
+    dofs[mesh['corner_froBotLft'], 1],
+    dofs[mesh['corner_froBotLft'], 2],    
     control.controlDofs[0],
     control.controlDofs[1],
     control.controlDofs[2]
@@ -68,8 +82,6 @@ fext = np.zeros_like(coor)  # external force
 # element vectors / matrix
 ue = vector.AsElement(disp, conn)
 coore = vector.AsElement(coor, conn)
-fe = np.empty([nelem, nne, ndim])
-Ke = np.empty([nelem, nne * ndim, nne * ndim])
 
 # DOF values
 Fext = np.zeros([periodicity.nni])
@@ -86,7 +98,7 @@ def randomizeMicrostr(nelem, nip, fraction_soft, value_hard, value_soft):
     return array
 # -------------------
 # mat = GMat.Elastic2d(K=np.ones([nelem, nip]), G=np.ones([nelem, nip]))
-tauy0 = randomizeMicrostr(nelem, nip, 0.7, 3.0, 0.3)
+tauy0 = randomizeMicrostr(nelem, nip, 0.3, 2.0, 0.7)
 mat = GMat.LinearHardeningDamage2d(
     K=np.ones([nelem, nip])*170,
     G=np.ones([nelem, nip])*80,
