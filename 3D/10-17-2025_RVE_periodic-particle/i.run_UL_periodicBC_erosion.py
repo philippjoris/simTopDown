@@ -169,7 +169,7 @@ args = parser.parse_args(sys.argv[1:])
 if args.plot:    
     import matplotlib.pyplot as plt
     plt.style.use(["goose", "goose-latex"])
-    #pf.plot_materials(coor, conn, mat, args, labels=["Matrix", "Interface", "Particle"])
+    pf.plot_materials(coor, conn, mat, args, labels=["Matrix", "Interface", "Particle"])
 
 
 # internal force of the right hand side per element and assembly
@@ -185,7 +185,7 @@ fres = fext - fint
 
 # solve
 # -----
-ninc = 1001
+ninc = 1501
 max_iter = 50
 tangent = True
 
@@ -208,15 +208,13 @@ for j in range(nr_materials):
 # deformation gradient
 F = np.array(
         [
-            [1.0 + (0.12/ninc), 0.0, 0.0],
-            [0.0, 1.0 / (1.0 + (0.12/ninc)), 0.0],
+            [1.0 + (0.15/ninc), 0.0, 0.0],
+            [0.0, 1.0 / (1.0 + (0.15/ninc)), 0.0],
             [0.0, 0.0, 1.0]
         ]
     )
 
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if ilam == 972:
-        break
     #damage_prev = mat.D_damage.copy()
     #disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
     #                                                                fext, disp, elem_to_delete, K, fe, I2, coor)

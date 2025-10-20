@@ -12,6 +12,8 @@ from srcTopDown.helper_functions.gmsh.parser_3D import parse_msh
 from srcTopDown.helper_functions.newton_raphson import newton_raphson_solve
 from srcTopDown.helper_functions.element_erosion import element_erosion_3D_PBC_multimat
 import srcTopDown.plot_functions.RVE_plot_3d as pf
+import meshio
+
 # mesh
 # ----
 
@@ -169,7 +171,7 @@ args = parser.parse_args(sys.argv[1:])
 if args.plot:    
     import matplotlib.pyplot as plt
     plt.style.use(["goose", "goose-latex"])
-    #pf.plot_materials(coor, conn, mat, args, labels=["Matrix", "Interface", "Particle"])
+    pf.plot_materials(coor, conn, mat, args, labels=["Matrix", "Interface", "Particle"])
 
 
 # internal force of the right hand side per element and assembly
@@ -180,12 +182,9 @@ for i in range(1,nr_materials):
 # initial residual
 fres = fext - fint
 
-
-
-
 # solve
 # -----
-ninc = 1001
+ninc = 1501
 max_iter = 50
 tangent = True
 
@@ -208,14 +207,17 @@ for j in range(nr_materials):
 # deformation gradient
 F = np.array(
         [
-            [1.0 + (0.12/ninc), 0.0, 0.0],
-            [0.0, 1.0 / (1.0 + (0.12/ninc)), 0.0],
+            [1.0 + (0.15/ninc), 0.0, 0.0],
+            [0.0, 1.0 / (1.0 + (0.15/ninc)), 0.0],
             [0.0, 0.0, 1.0]
         ]
     )
 
+# create HDF File
+keywords = ["stress", "strain", "damage", "failed_elements", "triaxiality"]
+    
 for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
-    if ilam == 972:
+    if ilam == 5:
         break
     #damage_prev = mat.D_damage.copy()
     #disp, elem, mat = element_erosion_3D_PBC(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
@@ -230,6 +232,10 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
     disp, elem, mat, converged, total_increment, res, iter = newton_raphson_solve(disp, initial_guess, max_iter, control, vector, conn, elem0, elem, mat,
                                                                        ue, fe, fint, Ke, K, fext, Fext, Fint, Solver, du, F, I2, coor, RES_TOL=1e-06)
     
+    if not converged:
+        print (f"Increment {ilam}/{ninc} DID NOT converged at Iter {iter}. Results printed.")
+        break
+        raise RuntimeError(f"Load step {ilam} failed to converge.")
     # element erosion
     if converged:
         for i in range(nr_materials):
@@ -254,20 +260,24 @@ for ilam, lam in enumerate(np.linspace(0.0, 1.0, ninc)):
                         disp, elem, mat = element_erosion_3D_PBC_multimat(Solver, vector, conn, mat, damage_prev, elem, elem0, fe,                                                                      
                                                                     fext, disp, elem_to_delete, K, fe, I2, coor, i)
                         damage_prev[i] = mat[i].D_damage.copy()
-    
-    if converged:
+
         # accumulate strains and stresses
         epseq[ilam] = np.average(GMat.Epseq(np.average(GMat.Strain(mat[0].F), axis=1)))
         sigeq[ilam] = np.average(GMat.Sigeq(np.average(mat[0].Sig, axis=1)))
         print (f"Increment {ilam}/{ninc} converged at Iter {iter}, Residual = {res}")
         initial_guess = 0.3 * total_increment
+
+        plot_data = pf.prepare_plot_data(elem, mat, conn, coor, disp)
+        pf.write_XDMF(plot_data, keywords, ilam)
         continue
-    if not converged:
-        print (f"Increment {ilam}/{ninc} DID NOT converged at Iter {iter}. Results printed.")
-        break
-        raise RuntimeError(f"Load step {ilam} failed to converge.")
+
 
 # post-processing
+# --- Write each increment as a separate XDMF file ---  
+
+
+
+
 if args.plot:
     plot_data = pf.prepare_plot_data(elem, mat, conn, coor, disp)
     pf.plot_3d(plot_data, "stress", args)
